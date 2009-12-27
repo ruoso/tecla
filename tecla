@@ -1,0 +1,115 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use utf8;
+use 5.01000;
+
+use Time::HiRes;
+use Event qw<loop unloop>;
+
+use SDL;
+use SDL::App;
+use SDL::Event;
+use SDL::Cursor;
+
+our $FPS = 40;
+our $width = 1280;
+our $height = 800;
+our $bg_color = SDL::Color->new(-r => 0, -g => 0, -b => 0);
+our @objects;
+
+our $app = SDL::App->new
+  ( -width => $width,
+    -height => $height,
+    -depth => 16,
+    -resizeable => 1,
+    -title => 'Tecla',
+    -fullscreen => 1);
+
+SDL::Cursor::show(0);
+
+our $time = $app->ticks;
+our $sevent = SDL::Event->new;
+our $timer = Event->timer
+  ( interval => (1/$FPS),
+    cb => sub {
+      my $oldtime = $time;
+      my $now = $app->ticks;
+
+      while ($sevent->poll()) {
+        my $type = $sevent->type;
+        if ($type == SDL_QUIT()) {
+          unloop;
+        } elsif ($type == SDL_KEYDOWN() &&
+                 $sevent->key_sym() == SDLK_ESCAPE) {
+          unloop;
+        } elsif ($type == SDL_KEYDOWN() &&
+                 $sevent->key_sym() == SDLK_F11) {
+          $app->fullscreen;
+        } elsif ($type == SDL_VIDEORESIZE()) {
+          $app->resize($sevent->resize_w, $sevent->resize_h);
+          $height = $app->height;
+          $width = $app->width;
+        } else {
+          my $x = int(rand($width));
+          my $y = int(rand($height));
+          my $r = int(rand(255));
+          my $g = int(rand(255));
+          my $b = int(rand(255));
+          my $s = int(rand(20))+20;
+          my $t = int(rand(1700))+300;
+          push @objects, Tecla::Object->new
+            ({ rect => SDL::Rect->new(-x => $x, -y => $y, -width => $s, -height => $s),
+               start_color => SDL::Color->new(-r => $r, -g => $g, -b => $b),
+               started => $time,
+               duration => $t });
+        }
+      }
+
+
+      @objects = grep { $_->time_lapse($oldtime,$now) } @objects;
+
+      my $rect = SDL::Rect->new(-width => $width, -height => $height);
+      $app->fill($rect, $bg_color);
+
+      $_->draw() for @objects;
+
+      $app->update($rect);
+      $time = $app->ticks;
+    });
+
+loop;
+exit;
+
+package Tecla::Object;
+use strict;
+use warnings;
+use base 'Class::Accessor';
+
+BEGIN {
+  __PACKAGE__->mk_accessors(qw(rect started duration time_to_live start_color color tone));
+}
+
+sub time_lapse {
+  my ($self, $oldtime, $now) = @_;
+  $self->time_to_live(($self->started + $self->duration) - $now);
+  if ($self->time_to_live > 0) {
+    my $percent = $self->time_to_live / $self->duration;
+    $self->color
+      ( SDL::Color->new
+        ( -r => $self->start_color->r * $percent,
+          -g => $self->start_color->g * $percent,
+          -b => $self->start_color->b * $percent ));
+    return 1;
+  } else {
+    return 0;
+  }
+}
+
+sub draw {
+  my $self = shift;
+  $app->fill($self->rect, $self->color);
+}
+
+1;
