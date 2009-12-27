@@ -10,20 +10,16 @@ use 5.01000;
 use Time::HiRes;
 use Event qw<loop unloop>;
 
-# SDL Perl Audio support is bad, let's make it in C.
-use Inline
-  C => 'DATA',
-  LIBS => '-lSDL';
-
-use SDL;
+use SDL 2.3;
+use SDL::Color;
 use SDL::App;
 use SDL::Event;
-use SDL::Cursor;
+use SDL::Events;
+use SDL::Mouse;
 
 our $FPS = 40;
 our $width = 1280;
 our $height = 800;
-our $bg_color = SDL::Color->new(-r => 0, -g => 0, -b => 0);
 our @objects;
 
 our $app = SDL::App->new
@@ -35,9 +31,17 @@ our $app = SDL::App->new
   #  -fullscreen => 1
   );
 
-SDL::Cursor::show(0);
+our $bg_color = SDL::Video::map_RGB($app->format(), 0, 0, 0);
 
-setup_audio();
+SDL::Mouse::show_cursor(0);
+
+sub audio_callback {
+  my ($stream, $len) = @_;
+  warn 'audio...';
+  for my $p (0..$len) {
+    $stream->[$p] = 0;
+  }
+}
 
 our $time = $app->ticks;
 our $sevent = SDL::Event->new;
@@ -47,7 +51,7 @@ our $timer = Event->timer
       my $oldtime = $time;
       my $now = $app->ticks;
 
-      while ($sevent->poll()) {
+      while (SDL::Events::poll_event($sevent)) {
         my $type = $sevent->type;
         if ($type == SDL_QUIT()) {
           unloop;
@@ -56,7 +60,7 @@ our $timer = Event->timer
           unloop;
         } elsif ($type == SDL_KEYDOWN() &&
                  $sevent->key_sym() == SDLK_F11) {
-          $app->fullscreen;
+          SDL::Video::wm_toggle_fullscreen($app);
         } elsif ($type == SDL_VIDEORESIZE()) {
           $app->resize($sevent->resize_w, $sevent->resize_h);
           $height = $app->height;
@@ -77,8 +81,8 @@ our $timer = Event->timer
           # http://www.phy.mtu.edu/~suits/NoteFreqCalcs.html
 
           push @objects, Tecla::Object->new
-            ({ rect => SDL::Rect->new(-x => $x, -y => $y, -width => $s, -height => $s),
-               start_color => SDL::Color->new(-r => $r, -g => $g, -b => $b),
+            ({ rect => SDL::Rect->new($x, $y, $s, $s),
+               start_color => SDL::Color->new($r, $g, $b),
                started => $time,
                duration => $t,
                freq => $freq });
@@ -88,12 +92,14 @@ our $timer = Event->timer
 
       @objects = grep { $_->time_lapse($oldtime,$now) } @objects;
 
-      my $rect = SDL::Rect->new(-width => $width, -height => $height);
-      $app->fill($rect, $bg_color);
+      my $rect = SDL::Rect->new(0, 0, $width, $height);
+
+      SDL::Video::fill_rect($app, $rect, $bg_color);
 
       $_->draw() for @objects;
 
-      $app->update($rect);
+      SDL::Video::update_rect($app, 0, 0, $width, $height);
+
       $time = $app->ticks;
     });
 
@@ -123,10 +129,10 @@ sub time_lapse {
   if ($self->time_to_live > 0) {
     my $percent = $self->time_to_live / $self->duration;
     $self->color
-      ( SDL::Color->new
-        ( -r => $self->start_color->r * $percent,
-          -g => $self->start_color->g * $percent,
-          -b => $self->start_color->b * $percent ));
+      ( SDL::Video::map_RGB($app->format(),
+        ( $self->start_color->r * $percent,
+          $self->start_color->g * $percent,
+          $self->start_color->b * $percent )));
     return 1;
   } else {
     return 0;
@@ -135,42 +141,8 @@ sub time_lapse {
 
 sub draw {
   my $self = shift;
-  $app->fill($self->rect, $self->color);
+  SDL::Video::fill_rect($app, $self->rect, $self->color);
 }
 
 1;
 
-__END__
-__C__
-
-#include <math.h>
-#include <SDL/SDL.h>
-#include <SDL/SDL_main.h>
-
-SDL_AudioSpec *desired, *obtained;
-
-void produce_audio_output(void *unused, Uint8 *stream, int len) {
-  // random noise to test the system...
-  int i;
-  for (i = 0; i < len; i++) {
-    stream[i] = rand()*120;
-  }
-}
-
-int setup_audio() {
-    desired = (SDL_AudioSpec *) malloc(sizeof(SDL_AudioSpec));
-    obtained = (SDL_AudioSpec *) malloc(sizeof(SDL_AudioSpec));
-    desired->freq = 44100;
-    desired->format = AUDIO_S8;
-    desired->samples = 4096;
-    desired->callback = produce_audio_output;
-    desired->userdata = NULL;
-    desired->channels = 1;
-
-    if ( SDL_OpenAudio(desired, obtained) < 0 ) {
-        fprintf(stderr, "AudioMixer, Unable to open audio: %s\n", SDL_GetError());
-        exit(1);
-    }
-
-    SDL_PauseAudio(0);
-}
