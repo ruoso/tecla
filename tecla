@@ -5,8 +5,15 @@ use warnings;
 use utf8;
 use 5.01000;
 
+# we shouldn't use SDL::Timer, because it starts a different thread,
+# and the SDL binding doesn't take care of that...
 use Time::HiRes;
 use Event qw<loop unloop>;
+
+# SDL Perl Audio support is bad, let's make it in C.
+use Inline
+  C => 'DATA',
+  LIBS => '-lSDL';
 
 use SDL;
 use SDL::App;
@@ -25,9 +32,12 @@ our $app = SDL::App->new
     -depth => 16,
     -resizeable => 1,
     -title => 'Tecla',
-    -fullscreen => 1);
+  #  -fullscreen => 1
+  );
 
 SDL::Cursor::show(0);
+
+setup_audio();
 
 our $time = $app->ticks;
 our $sevent = SDL::Event->new;
@@ -59,11 +69,19 @@ our $timer = Event->timer
           my $b = int(rand(255));
           my $s = int(rand(20))+20;
           my $t = int(rand(1700))+300;
+
+          my $tone = int(rand(24))-12; # produce one octave higher and
+                                       # one lower than the base
+          my $freq = 440 *             # start on A4
+            ((2 ** (1/12)) ** $tone);  # formula took from:
+          # http://www.phy.mtu.edu/~suits/NoteFreqCalcs.html
+
           push @objects, Tecla::Object->new
             ({ rect => SDL::Rect->new(-x => $x, -y => $y, -width => $s, -height => $s),
                start_color => SDL::Color->new(-r => $r, -g => $g, -b => $b),
                started => $time,
-               duration => $t });
+               duration => $t,
+               freq => $freq });
         }
       }
 
@@ -80,6 +98,7 @@ our $timer = Event->timer
     });
 
 loop;
+
 exit;
 
 package Tecla::Object;
@@ -88,7 +107,14 @@ use warnings;
 use base 'Class::Accessor';
 
 BEGIN {
-  __PACKAGE__->mk_accessors(qw(rect started duration time_to_live start_color color tone));
+  __PACKAGE__->mk_accessors(qw(rect started duration time_to_live
+                               start_color color freq audio));
+}
+
+sub new {
+  my $self = shift;
+  $self = $self->SUPER::new(@_);
+  return $self;
 }
 
 sub time_lapse {
@@ -113,3 +139,38 @@ sub draw {
 }
 
 1;
+
+__END__
+__C__
+
+#include <math.h>
+#include <SDL/SDL.h>
+#include <SDL/SDL_main.h>
+
+SDL_AudioSpec *desired, *obtained;
+
+void produce_audio_output(void *unused, Uint8 *stream, int len) {
+  // random noise to test the system...
+  int i;
+  for (i = 0; i < len; i++) {
+    stream[i] = rand()*120;
+  }
+}
+
+int setup_audio() {
+    desired = (SDL_AudioSpec *) malloc(sizeof(SDL_AudioSpec));
+    obtained = (SDL_AudioSpec *) malloc(sizeof(SDL_AudioSpec));
+    desired->freq = 44100;
+    desired->format = AUDIO_S8;
+    desired->samples = 4096;
+    desired->callback = produce_audio_output;
+    desired->userdata = NULL;
+    desired->channels = 1;
+
+    if ( SDL_OpenAudio(desired, obtained) < 0 ) {
+        fprintf(stderr, "AudioMixer, Unable to open audio: %s\n", SDL_GetError());
+        exit(1);
+    }
+
+    SDL_PauseAudio(0);
+}
