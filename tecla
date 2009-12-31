@@ -10,7 +10,12 @@ use 5.01000;
 use Time::HiRes;
 use Event qw<loop unloop>;
 
+use threads;
+use threads::shared;
+
 use SDL 2.3;
+use SDL::Audio;
+use SDL::AudioSpec;
 use SDL::Color;
 use SDL::App;
 use SDL::Event;
@@ -35,76 +40,105 @@ our $bg_color = SDL::Video::map_RGB($app->format(), 0, 0, 0);
 
 SDL::Mouse::show_cursor(0);
 
+my $thr = async {
+  our $time = $app->ticks;
+  our $sevent = SDL::Event->new;
+  our $timer = Event->timer
+    ( interval => (1/$FPS),
+      cb => sub {
+        my $oldtime = $time;
+        my $now = $app->ticks;
+
+        while (SDL::Events::poll_event($sevent)) {
+          my $type = $sevent->type;
+          if ($type == SDL_QUIT()) {
+            unloop;
+          } elsif ($type == SDL_KEYDOWN() &&
+                   $sevent->key_sym() == SDLK_ESCAPE) {
+            unloop;
+          } elsif ($type == SDL_KEYDOWN() &&
+                   $sevent->key_sym() == SDLK_F11) {
+            SDL::Video::wm_toggle_fullscreen($app);
+          } elsif ($type == SDL_VIDEORESIZE()) {
+            $app->resize($sevent->resize_w, $sevent->resize_h);
+            $height = $app->height;
+            $width = $app->width;
+          } else {
+            my $x = int(rand($width));
+            my $y = int(rand($height));
+            my $r = int(rand(255));
+            my $g = int(rand(255));
+            my $b = int(rand(255));
+            my $s = int(rand(20))+20;
+            my $t = int(rand(1700))+300;
+
+            my $tone = int(rand(24))-12; # produce one octave higher and
+            # one lower than the base
+            my $freq = 440 *             # start on A4
+              ((2 ** (1/12)) ** $tone);  # formula took from:
+            # http://www.phy.mtu.edu/~suits/NoteFreqCalcs.html
+
+            push @objects, Tecla::Object->new
+              ({ rect => SDL::Rect->new($x, $y, $s, $s),
+                 start_color => SDL::Color->new($r, $g, $b),
+                 started => $time,
+                 duration => $t,
+                 freq => $freq });
+          }
+        }
+
+
+        @objects = grep { $_->time_lapse($oldtime,$now) } @objects;
+
+        my $rect = SDL::Rect->new(0, 0, $width, $height);
+
+        SDL::Video::fill_rect($app, $rect, $bg_color);
+
+        $_->draw() for @objects;
+
+        SDL::Video::update_rect($app, 0, 0, $width, $height);
+
+        $time = $app->ticks;
+      });
+
+  loop;
+
+};
+
+my $f = 0;
+my $p = 0;
 sub audio_callback {
-  my ($stream, $len) = @_;
-  warn 'audio...';
-  for my $p (0..$len) {
-    $stream->[$p] = 0;
+  my ($int_size, $len, $streamref) = @_;
+
+  for (my $i = 0; $i < $len; $i++) {
+    use bytes;
+    substr($$streamref, $i, 1, chr($p));
+
+    if ($f && $p++ > 200) {
+      $f = 0;
+    } elsif (!$f && $p-- < 0) {
+      $f = 1;
+    }
   }
+
 }
 
-our $time = $app->ticks;
-our $sevent = SDL::Event->new;
-our $timer = Event->timer
-  ( interval => (1/$FPS),
-    cb => sub {
-      my $oldtime = $time;
-      my $now = $app->ticks;
+sub setup_audio {
+  my $desired = SDL::AudioSpec->new;
+  my $obtained = SDL::AudioSpec->new;
+  $desired->freq ( 44100 );
+  $desired->format ( AUDIO_U8 );
+  $desired->samples ( 4096 );
+  $desired->callback( 'main::audio_callback'); #canno
+  $desired->channels( 1 );
 
-      while (SDL::Events::poll_event($sevent)) {
-        my $type = $sevent->type;
-        if ($type == SDL_QUIT()) {
-          unloop;
-        } elsif ($type == SDL_KEYDOWN() &&
-                 $sevent->key_sym() == SDLK_ESCAPE) {
-          unloop;
-        } elsif ($type == SDL_KEYDOWN() &&
-                 $sevent->key_sym() == SDLK_F11) {
-          SDL::Video::wm_toggle_fullscreen($app);
-        } elsif ($type == SDL_VIDEORESIZE()) {
-          $app->resize($sevent->resize_w, $sevent->resize_h);
-          $height = $app->height;
-          $width = $app->width;
-        } else {
-          my $x = int(rand($width));
-          my $y = int(rand($height));
-          my $r = int(rand(255));
-          my $g = int(rand(255));
-          my $b = int(rand(255));
-          my $s = int(rand(20))+20;
-          my $t = int(rand(1700))+300;
+  die('AudioMixer, Unable to open audio: '.SDL::get_error."\n" ) if ( SDL::Audio::open($desired, $obtained) < 0 );
+  SDL::Audio::pause(0);
+}
 
-          my $tone = int(rand(24))-12; # produce one octave higher and
-                                       # one lower than the base
-          my $freq = 440 *             # start on A4
-            ((2 ** (1/12)) ** $tone);  # formula took from:
-          # http://www.phy.mtu.edu/~suits/NoteFreqCalcs.html
+setup_audio();
 
-          push @objects, Tecla::Object->new
-            ({ rect => SDL::Rect->new($x, $y, $s, $s),
-               start_color => SDL::Color->new($r, $g, $b),
-               started => $time,
-               duration => $t,
-               freq => $freq });
-        }
-      }
-
-
-      @objects = grep { $_->time_lapse($oldtime,$now) } @objects;
-
-      my $rect = SDL::Rect->new(0, 0, $width, $height);
-
-      SDL::Video::fill_rect($app, $rect, $bg_color);
-
-      $_->draw() for @objects;
-
-      SDL::Video::update_rect($app, 0, 0, $width, $height);
-
-      $time = $app->ticks;
-    });
-
-loop;
-
+$thr->join();
 exit;
 
 package Tecla::Object;
