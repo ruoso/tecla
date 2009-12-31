@@ -79,10 +79,10 @@ my $thr = async {
             my $s = int(rand(20))+20;
             my $t = int(rand(1700))+300;
 
-            my $tone = int(rand(60))-30; # produce one octave higher and
+            my $tone = int(rand(24))-24; # produce one octave higher and
             # one lower than the base
-            my $freq = 2400 *             # start on A4
-              ((2 ** (1/30)) ** $tone);  # formula took from:
+            my $freq = 440 *             # start on A4
+              ((2 ** (1/12)) ** $tone);  # formula took from:
             # http://www.phy.mtu.edu/~suits/NoteFreqCalcs.html
 
             push @newobjects, Tecla::Object->new
@@ -120,7 +120,10 @@ sub audio_callback {
   while (my $message = shift @timer_to_audio) {
     # get rid of shared object...
     my %local_message = %{$message};
-    push @sequencer, Tecla::Sound->new(\%local_message);
+    my $wave_duration = 1 / $local_message{freq};
+    $local_message{wave_samples} = (11025 * ($wave_duration));
+    $local_message{played_samples} = 0;
+    push @sequencer, \%local_message;
   }
 
   @sequencer =
@@ -142,22 +145,27 @@ sub audio_callback {
       my $offset =  $self->{played_samples} -
         (int($self->{played_samples} / $self->{wave_samples})*$self->{wave_samples});
 
-      my $degrees = 360 * (($offset+$i) / $self->{wave_samples});
-      my $sin = sin($degrees * 1/180);
 
-      my $amplitude = 1;
+      my $amp = 1;
+      if ($now - $self->{started} < 30) {
+        $amp = ($now - $self->{started})/30;
+      } elsif ($self->{duration} - ($now - $self->{started}) < 30) {
+        $amp = ($self->{duration} - ($now - $self->{started})) / 30;
+      }
 
-      $val += $amplitude * $sin;
+      my $this = $amp * sin(($offset / $self->{wave_samples}) * 360 / 180);
+      $val += $this;
+
 
       $self->{played_samples} += $len;
 
     }
 
-    $val = -1 if $val < -1;
-    $val = 1 if $val > 1;
-    $val = ($val+1)/2;
+    $val = int($val * 10) + 0x80; # this is the center...
+    $val = 0 if $val < 0;
+    $val = 255 if $val > 255;
 
-    substr($$streamref, $i, 1, chr(int($val*80)));
+    substr($$streamref, $i, 1, chr($val));
 
   }
 
@@ -166,7 +174,7 @@ sub audio_callback {
 sub setup_audio {
   my $desired = SDL::AudioSpec->new;
   my $obtained = SDL::AudioSpec->new;
-  $desired->freq ( 22500 );
+  $desired->freq ( 11025 );
   $desired->format ( AUDIO_U8 );
   $desired->samples ( 2048 );
   $desired->callback( 'main::audio_callback'); #canno
@@ -198,7 +206,7 @@ sub new {
 
   my %message :shared;
   $message{started} = $self->started;
-  $message{duration} = $self->duration;
+  $message{duration} = $self->duration / 2;
   $message{freq} = $self->freq;
   push @timer_to_audio, \%message;
 
@@ -226,29 +234,6 @@ sub draw {
   SDL::Video::fill_rect($app, $self->rect, $self->color);
   return 1;
 }
-
-package Tecla::Sound;
-use strict;
-use warnings;
-use base 'Class::Accessor';
-
-BEGIN {
-  __PACKAGE__->mk_accessors(qw(started duration freq
-                               wave_samples played_samples));
-}
-
-sub new {
-  my $self = shift;
-  $self = $self->SUPER::new(@_);
-
-
-  my $wave_duration = 1 / $self->freq;
-  $self->wave_samples(22500 * ($wave_duration));
-  $self->played_samples(0);
-
-  return $self;
-}
-
 
 1;
 
