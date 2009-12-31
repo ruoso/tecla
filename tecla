@@ -79,10 +79,10 @@ my $thr = async {
             my $s = int(rand(20))+20;
             my $t = int(rand(1700))+300;
 
-            my $tone = int(rand(24))-12; # produce one octave higher and
+            my $tone = int(rand(60))-30; # produce one octave higher and
             # one lower than the base
-            my $freq = 1200 *             # start on A4
-              ((2 ** (1/12)) ** $tone);  # formula took from:
+            my $freq = 2400 *             # start on A4
+              ((2 ** (1/30)) ** $tone);  # formula took from:
             # http://www.phy.mtu.edu/~suits/NoteFreqCalcs.html
 
             push @newobjects, Tecla::Object->new
@@ -123,7 +123,11 @@ sub audio_callback {
     push @sequencer, Tecla::Sound->new(\%local_message);
   }
 
-  @sequencer = grep { $_->{started} + $_->{duration} > $now } @sequencer;
+  @sequencer =
+    grep { $_ }
+    (sort { $b->{started} <=> $a->{started} }
+     grep { $_->{started} + $_->{duration} > $now } @sequencer)[0..10];
+
 
   return unless @sequencer;
   my $count = scalar @sequencer;
@@ -149,9 +153,11 @@ sub audio_callback {
 
     }
 
-    $val = (($val / $count)+1)/2;
+    $val = -1 if $val < -1;
+    $val = 1 if $val > 1;
+    $val = ($val+1)/2;
 
-    substr($$streamref, $i, 1, chr(int($val*255)));
+    substr($$streamref, $i, 1, chr(int($val*80)));
 
   }
 
