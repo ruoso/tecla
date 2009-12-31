@@ -22,10 +22,16 @@ use SDL::Event;
 use SDL::Events;
 use SDL::Mouse;
 
+use Audio::Data;
+
 our $FPS = 40;
 our $width = 1280;
 our $height = 800;
 our @objects;
+
+# this is the message-passing array from
+# the timer code to the audio code...
+our @timer_to_audio :shared;
 
 our $app = SDL::App->new
   ( -width => $width,
@@ -49,6 +55,7 @@ my $thr = async {
         my $oldtime = $time;
         my $now = $app->ticks;
 
+        my @newobjects;
         while (SDL::Events::poll_event($sevent)) {
           my $type = $sevent->type;
           if ($type == SDL_QUIT()) {
@@ -74,11 +81,11 @@ my $thr = async {
 
             my $tone = int(rand(24))-12; # produce one octave higher and
             # one lower than the base
-            my $freq = 440 *             # start on A4
+            my $freq = 1200 *             # start on A4
               ((2 ** (1/12)) ** $tone);  # formula took from:
             # http://www.phy.mtu.edu/~suits/NoteFreqCalcs.html
 
-            push @objects, Tecla::Object->new
+            push @newobjects, Tecla::Object->new
               ({ rect => SDL::Rect->new($x, $y, $s, $s),
                  start_color => SDL::Color->new($r, $g, $b),
                  started => $time,
@@ -88,13 +95,11 @@ my $thr = async {
         }
 
 
-        @objects = grep { $_->time_lapse($oldtime,$now) } @objects;
-
         my $rect = SDL::Rect->new(0, 0, $width, $height);
 
         SDL::Video::fill_rect($app, $rect, $bg_color);
 
-        $_->draw() for @objects;
+        @objects = grep { $_->time_lapse($oldtime,$now) && $_->draw() } @objects, @newobjects;
 
         SDL::Video::update_rect($app, 0, 0, $width, $height);
 
@@ -105,20 +110,49 @@ my $thr = async {
 
 };
 
-my $f = 0;
-my $p = 0;
+our @sequencer;
+
 sub audio_callback {
   my ($int_size, $len, $streamref) = @_;
 
+  my $now = $app->ticks;
+
+  while (my $message = shift @timer_to_audio) {
+    # get rid of shared object...
+    my %local_message = %{$message};
+    push @sequencer, Tecla::Sound->new(\%local_message);
+  }
+
+  @sequencer = grep { $_->{started} + $_->{duration} > $now } @sequencer;
+
+  return unless @sequencer;
+  my $count = scalar @sequencer;
+
   for (my $i = 0; $i < $len; $i++) {
     use bytes;
-    substr($$streamref, $i, 1, chr($p));
 
-    if ($f && $p++ > 200) {
-      $f = 0;
-    } elsif (!$f && $p-- < 0) {
-      $f = 1;
+    my $val = 0;
+
+    for my $self (@sequencer) {
+
+      my $offset =  $self->{played_samples} -
+        (int($self->{played_samples} / $self->{wave_samples})*$self->{wave_samples});
+
+      my $degrees = 360 * (($offset+$i) / $self->{wave_samples});
+      my $sin = sin($degrees * 1/180);
+
+      my $amplitude = 1;
+
+      $val += $amplitude * $sin;
+
+      $self->{played_samples} += $len;
+
     }
+
+    $val = (($val / $count)+1)/2;
+
+    substr($$streamref, $i, 1, chr(int($val*255)));
+
   }
 
 }
@@ -126,13 +160,14 @@ sub audio_callback {
 sub setup_audio {
   my $desired = SDL::AudioSpec->new;
   my $obtained = SDL::AudioSpec->new;
-  $desired->freq ( 44100 );
+  $desired->freq ( 22500 );
   $desired->format ( AUDIO_U8 );
-  $desired->samples ( 4096 );
+  $desired->samples ( 2048 );
   $desired->callback( 'main::audio_callback'); #canno
   $desired->channels( 1 );
 
   die('AudioMixer, Unable to open audio: '.SDL::get_error."\n" ) if ( SDL::Audio::open($desired, $obtained) < 0 );
+
   SDL::Audio::pause(0);
 }
 
@@ -148,12 +183,19 @@ use base 'Class::Accessor';
 
 BEGIN {
   __PACKAGE__->mk_accessors(qw(rect started duration time_to_live
-                               start_color color freq audio));
+                               start_color color freq));
 }
 
 sub new {
   my $self = shift;
   $self = $self->SUPER::new(@_);
+
+  my %message :shared;
+  $message{started} = $self->started;
+  $message{duration} = $self->duration;
+  $message{freq} = $self->freq;
+  push @timer_to_audio, \%message;
+
   return $self;
 }
 
@@ -176,7 +218,31 @@ sub time_lapse {
 sub draw {
   my $self = shift;
   SDL::Video::fill_rect($app, $self->rect, $self->color);
+  return 1;
 }
+
+package Tecla::Sound;
+use strict;
+use warnings;
+use base 'Class::Accessor';
+
+BEGIN {
+  __PACKAGE__->mk_accessors(qw(started duration freq
+                               wave_samples played_samples));
+}
+
+sub new {
+  my $self = shift;
+  $self = $self->SUPER::new(@_);
+
+
+  my $wave_duration = 1 / $self->freq;
+  $self->wave_samples(22500 * ($wave_duration));
+  $self->played_samples(0);
+
+  return $self;
+}
+
 
 1;
 
