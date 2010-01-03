@@ -5,11 +5,6 @@ use warnings;
 use utf8;
 use 5.01000;
 
-# we shouldn't use SDL::Timer, because it starts a different thread,
-# and the SDL binding doesn't take care of that...
-use Time::HiRes;
-use Event qw<loop unloop>;
-
 use threads;
 use threads::shared;
 
@@ -21,17 +16,15 @@ use SDL::App;
 use SDL::Event;
 use SDL::Events;
 use SDL::Mouse;
-
-use Audio::Data;
+use SDL::Time;
 
 our $FPS = 40;
 our $width = 1280;
 our $height = 800;
-our @objects;
 
-# this is the message-passing array from
-# the timer code to the audio code...
+# these are the message-passing arrays
 our @timer_to_audio :shared;
+our @event_to_timer :shared;
 
 our $app = SDL::App->new
   ( -width => $width,
@@ -46,68 +39,57 @@ our $bg_color = SDL::Video::map_RGB($app->format(), 0, 0, 0);
 
 SDL::Mouse::show_cursor(0);
 
-
 our $time = $app->ticks;
-our $sevent = SDL::Event->new;
-our $timer = Event->timer
-  ( interval => (1/$FPS),
-    cb => sub {
-      my $oldtime = $time;
-      my $now = $app->ticks;
 
-      my @newobjects;
-      while (SDL::Events::poll_event($sevent)) {
-        my $type = $sevent->type;
-        if ($type == SDL_QUIT()) {
-          unloop;
-        } elsif ($type == SDL_KEYDOWN() &&
-                 $sevent->key_sym() == SDLK_ESCAPE) {
-          unloop;
-        } elsif ($type == SDL_KEYDOWN() &&
-                 $sevent->key_sym() == SDLK_F11) {
-          SDL::Video::wm_toggle_fullscreen($app);
-        } elsif ($type == SDL_VIDEORESIZE()) {
-          $app->resize($sevent->resize_w, $sevent->resize_h);
-          $height = $app->height;
-          $width = $app->width;
-        } else {
-          my $x = int(rand($width));
-          my $y = int(rand($height));
-          my $r = int(rand(255));
-          my $g = int(rand(255));
-          my $b = int(rand(255));
-          my $s = int(rand(20))+20;
-          my $t = int(rand(1700))+300;
+our @objects;
+sub timer_callback {
+  my $oldtime = $time;
+  my $now = $app->ticks;
 
-          my $tone = int(rand(24))-24; # produce one octave higher and
-          # one lower than the base
-          my $freq = 440 *              # start on A4
-            ((2 ** (1/12)) ** $tone);   # formula took from:
-          # http://www.phy.mtu.edu/~suits/NoteFreqCalcs.html
+  my @newobjects;
+  {
+    lock @event_to_timer;
+    while (shift @event_to_timer) {
+      my $x = int(rand($width));
+      my $y = int(rand($height));
+      my $r = int(rand(255));
+      my $g = int(rand(255));
+      my $b = int(rand(255));
+      my $s = int(rand(20))+20;
+      my $t = int(rand(1700))+300;
 
-          push @newobjects, Tecla::Object->new
-            ({ rect => SDL::Rect->new($x, $y, $s, $s),
-               start_color => SDL::Color->new($r, $g, $b),
-               started => $time,
-               duration => $t,
-               freq => $freq });
-        }
-      }
+      my $tone = int(rand(24))-24;   # produce one octave higher and
+      # one lower than the base
+      my $freq = 440 *               # start on A4
+        ((2 ** (1/12)) ** $tone);    # formula took from:
+      # http://www.phy.mtu.edu/~suits/NoteFreqCalcs.html
 
+      push @newobjects, Tecla::Object->new
+        ({ rect => SDL::Rect->new($x, $y, $s, $s),
+           start_color => SDL::Color->new($r, $g, $b),
+           started => $time,
+           duration => $t,
+           freq => $freq });
+    }
+  };
 
-      my $rect = SDL::Rect->new(0, 0, $width, $height);
+  my $rect = SDL::Rect->new(0, 0, $width, $height);
 
-      SDL::Video::fill_rect($app, $rect, $bg_color);
+  SDL::Video::fill_rect($app, $rect, $bg_color);
 
-      @objects = grep { $_->time_lapse($oldtime,$now) && $_->draw() } @objects, @newobjects;
+  @objects = grep { $_->time_lapse($oldtime,$now) && $_->draw() } @objects, @newobjects;
 
-      SDL::Video::update_rect($app, 0, 0, $width, $height);
+  SDL::Video::update_rect($app, 0, 0, $width, $height);
 
-      $time = $app->ticks;
-    });
+  $time = $app->ticks;
+
+  return int(1000/$FPS);
+}
+
+our $timer = SDL::Time::add_timer(int(1000/$FPS),'main::timer_callback');
+
 
 our @sequencer;
-
 sub audio_callback {
   my ($int_size, $len, $streamref) = @_;
 
@@ -182,8 +164,27 @@ sub setup_audio {
 }
 
 setup_audio();
-loop;
-exit;
+
+our $sevent = SDL::Event->new;
+while (SDL::Events::wait_event($sevent)) {
+  my $type = $sevent->type;
+  if ($type == SDL_QUIT()) {
+    exit;
+  } elsif ($type == SDL_KEYDOWN() &&
+           $sevent->key_sym() == SDLK_ESCAPE) {
+    exit;
+  } elsif ($type == SDL_KEYDOWN() &&
+           $sevent->key_sym() == SDLK_F11) {
+    SDL::Video::wm_toggle_fullscreen($app);
+  } elsif ($type == SDL_VIDEORESIZE()) {
+    $app->resize($sevent->resize_w, $sevent->resize_h);
+    $height = $app->height;
+    $width = $app->width;
+  } else {
+    lock @event_to_timer;
+    push @event_to_timer, 1;
+  }
+}
 
 package Tecla::Object;
 use strict;
