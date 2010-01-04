@@ -18,9 +18,13 @@ use SDL::Events;
 use SDL::Mouse;
 use SDL::Time;
 
-our $FPS = 40;
-our $width = 1280;
-our $height = 800;
+our $FPS :shared;
+our $width :shared;
+our $height :shared;
+
+$FPS = 40;
+$width = 1280;
+$height = 800;
 
 # these are the message-passing arrays
 our @timer_to_audio :shared;
@@ -73,6 +77,9 @@ sub timer_callback {
     }
   };
 
+  lock $width;
+  lock $height;
+
   my $rect = SDL::Rect->new(0, 0, $width, $height);
 
   SDL::Video::fill_rect($app, $rect, $bg_color);
@@ -82,12 +89,10 @@ sub timer_callback {
   SDL::Video::update_rect($app, 0, 0, $width, $height);
 
   $time = $app->ticks;
-
   return int(1000/$FPS);
 }
 
 our $timer = SDL::Time::add_timer(int(1000/$FPS),'main::timer_callback');
-
 
 our @sequencer;
 sub audio_callback {
@@ -177,9 +182,11 @@ while (SDL::Events::wait_event($sevent)) {
            $sevent->key_sym() == SDLK_F11) {
     SDL::Video::wm_toggle_fullscreen($app);
   } elsif ($type == SDL_VIDEORESIZE()) {
-    $app->resize($sevent->resize_h, $sevent->resize_w);
-    $height = $app->height;
-    $width = $app->width;
+    lock $width;
+    lock $height;
+    $app->resize($sevent->resize_w, $sevent->resize_h);
+    $height = $app->h;
+    $width = $app->w;
   } else {
     lock @event_to_timer;
     push @event_to_timer, 1;
