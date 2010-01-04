@@ -177,7 +177,7 @@ while (SDL::Events::wait_event($sevent)) {
            $sevent->key_sym() == SDLK_F11) {
     SDL::Video::wm_toggle_fullscreen($app);
   } elsif ($type == SDL_VIDEORESIZE()) {
-    $app->resize($sevent->resize_w, $sevent->resize_h);
+    $app->resize($sevent->resize_h, $sevent->resize_w);
     $height = $app->height;
     $width = $app->width;
   } else {
