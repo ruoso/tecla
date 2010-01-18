@@ -26,6 +26,9 @@ $FPS = 40;
 $width = 1280;
 $height = 800;
 
+my $time_acc = 0;
+my $time_acc_ctrl = 0;
+
 # these are the message-passing arrays
 our @timer_to_audio :shared;
 our @event_to_timer :shared;
@@ -86,9 +89,19 @@ sub timer_callback {
 
   @objects = grep { $_->time_lapse($oldtime,$now) && $_->draw() } @objects, @newobjects;
 
-  SDL::Video::update_rect($app, 0, 0, $width, $height);
+  SDL::Video::update_rects($app, map { $_->rect } @objects );
+
 
   $time = $app->ticks;
+
+  $time_acc += $time - $now;
+  if (++$time_acc_ctrl == 100) {
+    my $avg = $time_acc / 100;
+    print "Average time is $avg\n";
+    $time_acc = 0;
+    $time_acc_ctrl = 0;
+  }
+
   return int(1000/$FPS);
 }
 
